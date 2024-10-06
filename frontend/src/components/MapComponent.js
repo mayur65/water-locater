@@ -1,97 +1,119 @@
-const express = require('express');
-const bodyParser = require('body-parser');
-const fs = require('fs');
-const axios = require('axios');  // Axios for making HTTP requests to Ollama API
-const cors = require('cors');
+import React, { useState, useEffect } from 'react';
+import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 
-const app = express();
-const PORT = 3001;
-
-app.use(cors());
-app.use(bodyParser.json());
-
-const haversineDistance = (coords1, coords2) => {
-    const toRad = (x) => x * Math.PI / 180;
-
-    const lat1 = toRad(coords1[0]);
-    const lon1 = toRad(coords1[1]);
-    const lat2 = toRad(coords2[0]);
-    const lon2 = toRad(coords2[1]);
-
-    const dLat = lat2 - lat1;
-    const dLon = lon2 - lon1;
-
-    const R = 6371;
-    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-        Math.cos(lat1) * Math.cos(lat2) *
-        Math.sin(dLon / 2) * Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-
-    return R * c;
-};
-
-const calculateClosestDistance = (userPos, featureCoords) => {
-    let minDistance = Infinity;
-    let closestWaterSource = null;
-
-    for (let i = 0; i < featureCoords.length; i++) {
-        const distance = haversineDistance(userPos, [featureCoords[1], featureCoords[0]]); // [lat, lng]
-        if (distance < minDistance) {
-            minDistance = distance;
-            closestWaterSource = [featureCoords[1], featureCoords[0]]; // Store the closest water source coordinates
-        }
-    }
-
-    return { minDistance, closestWaterSource };
-};
-
-app.post('/closest-distance', (req, res) => {
-    const { userPosition } = req.body;
-    if (!userPosition || userPosition.length !== 2) {
-        return res.status(400).json({ error: 'Invalid GPS coordinates provided.' });
-    }
-
-    const geoJsonData = JSON.parse(fs.readFileSync('./river_kenya.geojson', 'utf-8'));
-
-    let closestDistance = Infinity;
-    let closestWaterSourcePosition = null;
-
-    geoJsonData.features.forEach(feature => {
-        feature.geometry.coordinates.forEach(geo => {
-            const { minDistance, closestWaterSource } = calculateClosestDistance(userPosition, geo);
-            if (minDistance < closestDistance) {
-                closestDistance = minDistance;
-                closestWaterSourcePosition = closestWaterSource;
-            }
-        })
-    });
-    res.json({ closestDistance, waterSourcePosition: closestWaterSourcePosition });
-});
-
-app.post('/translate', async (req, res) => {
-    const coord = req.body.currentPosition;  // e.g., [-1.6713902371696097, 36.843456029456576]
-    const message = req.body.message;
-
+const fetchClosestDistance = async (userPosition) => {
     try {
-        console.log(req.body);
-
-        // Call Ollama API to generate translation
-        const response = await axios.post('http://localhost:8888/api/generate', {
-            model: 'llama2',  // Use the appropriate LLaMA model
-            prompt: `Based on the coordinates - ${coord[0]}, ${coord[1]}, convert the following sentence to the native language: ${message}`,
-            stream: false  // Disable streaming for a complete response
+        const response = await fetch('http://localhost:3001/closest-distance', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ userPosition }), // Send only the user position
         });
-
-        const translatedMessage = response.data.text; // Get the generated text from the Ollama response
-
-        res.json({ translatedText: translatedMessage });
+        const data = await response.json();
+        return {
+            closestDistance: data.closestDistance,
+            waterSourcePosition: data.waterSourcePosition, // New: position of the closest water source
+        };
     } catch (error) {
-        console.error('Error calling Ollama API:', error);
-        res.status(500).json({ error: 'Translation failed' });
+        console.error('Error fetching distance:', error);
+        return { closestDistance: null, waterSourcePosition: null };
     }
-});
+};
 
-// Start the server
-app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-});
+const fetchTranslation = async (currentPosition, message) => {
+    try {
+        const response = await fetch('http://localhost:3001/translate', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ currentPosition, message }),
+        });
+        const data = await response.json();
+        return data.translatedText; // Return translated text
+    } catch (error) {
+        console.error('Error fetching translation:', error);
+        return message; // If error, return the original message
+    }
+};
+
+const calculateDirection = (userPos, waterSourcePos) => {
+    if (!userPos || !waterSourcePos || !Array.isArray(userPos) || !Array.isArray(waterSourcePos)) {
+        return '';
+    }
+
+    const latDiff = waterSourcePos[0] - userPos[0];
+    const lonDiff = waterSourcePos[1] - userPos[1];
+
+    let latDirection = '';
+    let lonDirection = '';
+
+    // Latitude direction
+    if (latDiff > 0) {
+        latDirection = 'north';
+    } else if (latDiff < 0) {
+        latDirection = 'south';
+    }
+
+    if (lonDiff > 0) {
+        lonDirection = 'east';
+    } else if (lonDiff < 0) {
+        lonDirection = 'west';
+    }
+
+    if (latDirection && lonDirection) {
+        return `${latDirection}${lonDirection}`;
+    }
+    return latDirection || lonDirection;
+};
+
+const MapComponent = () => {
+    const [userPosition, setUserPosition] = useState([0, 0]);
+    const [distance, setDistance] = useState(null); // Store calculated closest distance
+    const [waterSourcePosition, setWaterSourcePosition] = useState(null); // Store water source position
+    const [translatedMessage, setTranslatedMessage] = useState(null); // Translated message
+
+    useEffect(() => {
+        navigator.geolocation.getCurrentPosition(async (position) => {
+            const currentPosition = [-1.6713902371696097, 36.843456029456576];
+            setUserPosition(currentPosition);
+
+            const { closestDistance, waterSourcePosition } = await fetchClosestDistance(currentPosition);
+            setDistance(closestDistance);
+            setWaterSourcePosition(waterSourcePosition);
+        });
+    }, []);
+
+    useEffect(() => {
+        const translateMessage = async () => {
+            if (distance !== null && waterSourcePosition !== null) {
+                const direction = calculateDirection(userPosition, waterSourcePosition);
+                const message = `Closest water source is ${distance.toFixed(2)} km away to the ${direction}.`;
+                const translated = await fetchTranslation(userPosition, message);
+                console.log(translated)
+                setTranslatedMessage(message + "\n" + translated);
+            }
+        };
+        translateMessage();
+    }, [distance, userPosition, waterSourcePosition]); // Trigger only when distance, user position, or water source changes
+
+    return (
+        <MapContainer center={[0.0236, 37.9062]} zoom={6} style={{ height: "600px", width: "100%" }}>
+            <TileLayer
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                attribution="&copy; OpenStreetMap contributors"
+            />
+
+            {/* User's Position */}
+            <Marker position={userPosition}>
+                <Popup>
+                    You are here<br />
+                    {translatedMessage || 'Calculating...'}
+                </Popup>
+            </Marker>
+        </MapContainer>
+    );
+};
+
+export default MapComponent;

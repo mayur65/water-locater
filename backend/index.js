@@ -1,17 +1,14 @@
 const express = require('express');
 const bodyParser = require('body-parser');
 const fs = require('fs');
-const { OpenAI } = require('openai');
+const axios = require('axios');  // Axios for making HTTP requests to Ollama API
 const cors = require('cors');
 
 const app = express();
 const PORT = 3001;
 
 app.use(cors());
-
 app.use(bodyParser.json());
-
-const openai = new OpenAI();
 
 const haversineDistance = (coords1, coords2) => {
     const toRad = (x) => x * Math.PI / 180;
@@ -72,28 +69,26 @@ app.post('/closest-distance', (req, res) => {
 });
 
 app.post('/translate', async (req, res) => {
-
-    const coord = req.body.currentPosition;  // [-1.6713902371696097, 36.843456029456576]
+    const coord = req.body.currentPosition;  // e.g., [-1.6713902371696097, 36.843456029456576]
     const message = req.body.message;
 
-    console.log(req.body)
-    const completion = await openai.chat.completions.create({
-        model: "gpt-4o",
-        messages: [
-            { role: "system", content: "You are a helpful assistant." },
-            {
-                role: "user",
-                content: "Based on the above coordinates - " + coord[0] + ", " + coord[1] + ",\n" +
-                    "Convert the below sentence to native language - " + message + " Just give me only response sentence, please do not write anything else.",
-            },
-        ],
-    });
+    try {
+        console.log(req.body);
 
-    console.log(completion.choices[0].message);
+        // Call Ollama API to generate translation
+        const response = await axios.post('http://localhost:8888/api/generate', {
+            model: 'llama2',  // Use the appropriate LLaMA model
+            prompt: `Based on the coordinates - ${coord[0]}, ${coord[1]}, convert the following sentence to the native language: ${message}`,
+            stream: false  // Disable streaming for a complete response
+        });
 
-    const translatedMessage = completion.choices[0].message.content; // Extract the translated message
+        const translatedMessage = response.data.text; // Get the generated text from the Ollama response
 
-    res.json({ translatedText: translatedMessage });
+        res.json({ translatedText: translatedMessage });
+    } catch (error) {
+        console.error('Error calling Ollama API:', error);
+        res.status(500).json({ error: 'Translation failed' });
+    }
 });
 
 // Start the server
